@@ -14,6 +14,7 @@ mod differential;
 pub(super) mod initialize;
 mod prometheus;
 mod reachability;
+mod resource_usage;
 mod timely;
 
 use std::any::Any;

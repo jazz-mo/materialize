@@ -153,6 +153,63 @@ The `mz_compute_operator_durations_histogram` view describes a histogram of the 
 <!-- RELATION_SPEC_UNDOCUMENTED mz_introspection.mz_compute_operator_durations_histogram_per_worker -->
 <!-- RELATION_SPEC_UNDOCUMENTED mz_introspection.mz_compute_operator_durations_histogram_raw -->
 
+## `mz_cluster_resource_usage`
+
+The `mz_cluster_resource_usage` source reports the resource usage of each process of a cluster
+replica, as one row per measurement source and metric. Each row is what that source reported,
+without interpretation: sources measure overlapping but distinct quantities, and the differences
+between them are informative. Combining them into a single figure for memory usage, or for how
+close a replica is to its limit, is left to queries over this relation.
+
+An observation the replica could not read is absent rather than zero, so the set of metrics
+present depends on the platform and the kernel version. Where disk is integrated as swap there is
+no filesystem to measure, so disk usage appears as the `swap` metrics rather than under a
+filesystem source. A metric whose name ends in `peak` is a
+high-water mark since the process started; the rest are instantaneous. Peaks that the operating
+system maintains itself, such as `cgroup`'s `memory_peak` and `rusage`'s `max_rss`, are exact.
+Peaks folded from samples, such as `heap_peak` and `fs_used_peak`, can miss a spike shorter than
+the sampling interval and are therefore lower bounds.
+
+The `proc_status` metric `heap` is resident memory plus swap, the quantity a replica is limited
+on, and `heap_peak` is a lower bound on its high-water mark. There is no corresponding upper bound.
+The `cgroup` peaks describe the cgroup's own charge, which excludes the replica's resident
+file-backed pages and so is a different, smaller quantity, and `rusage`'s `max_rss` is refreshed by
+the kernel only at internal checkpoints and can read below the concurrent `vm_rss`. Metrics from
+different sources measure different things and should not be combined into a bound on one of
+them. The `cgroup` metrics `memory_current` and `swap_current` in particular overlap: a page read
+back from swap stays in the swap cache, counted in both, and the `swapcached` metric reports how
+much is in that state.
+
+Because each row is a separate source's own reading, values from different sources are not
+interchangeable and adding them together generally produces a number that means nothing. In
+particular:
+
+* **How close is this replica to its memory limit?** Compare `cgroup` `memory_current` against
+  `memory_max`. **Did it ever reach it?** Compare `memory_peak` against `memory_max`. A
+  `memory_peak` at the limit means the replica ran out of RAM and spilled to swap, even if the
+  current reading is comfortable.
+* **Do not use `events_max` as a limit-hit signal.** Where swap is configured it stays at zero even
+  for a replica pinned at its ceiling, because reclaim succeeds by swapping instead of failing.
+  `events_oom_kill` does report kills.
+* **How much memory does this replica itself account for?** Use `proc_status` `rss_anon`. Do not
+  use `vm_rss`: it includes `rss_file`, largely this binary's own resident text, which is shared
+  between replicas and charged to whichever cgroup first faulted it in, not to this replica.
+* **Do not add `memory_current` and `swap_current`.** A page read back from swap is counted in
+  both, and `swapcached` reports how much is in that state.
+* **Where disk is provided as swap**, disk usage appears as `swap_current` and there are no
+  `statvfs` rows at all.
+* **These readings live and die with the replica process.** A restart resets every peak. For
+  history that survives restarts, see
+  [`mz_internal.mz_cluster_replica_metrics_history`](/reference/system-catalog/mz_internal/#mz_cluster_replica_metrics_history).
+
+<!-- RELATION_SPEC mz_introspection.mz_cluster_resource_usage NO_COMMENTS -->
+| Field        | Type      | Meaning                                                              |
+|--------------|-----------|----------------------------------------------------------------------|
+| `process_id` | [`uint8`] | The ID of the process within the replica.                            |
+| `source`     | [`text`]  | The measurement source, for example `cgroup` or `rusage`.             |
+| `metric`     | [`text`]  | What the source measured, for example `memory_current`.               |
+| `value`      | [`uint8`] | The reported value, in bytes for a size and as a count otherwise.     |
+
 ## `mz_cluster_prometheus_metrics`
 
 The `mz_cluster_prometheus_metrics` source exposes Prometheus metrics collected from each cluster replica process's internal metrics registry.
